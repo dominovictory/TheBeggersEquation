@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Empire Earth: Infinite Zoom</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; color: #ffaa00; font-family: monospace; }
+        canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+        #ui { 
+            position: absolute; top: 10px; left: 10px; 
+            background: rgba(0,0,0,0.85); padding: 20px; 
+            border: 1px solid #ffaa00; border-radius: 8px;
+            pointer-events: none;
+        }
+        .hud { font-size: 1.2em; font-weight: bold; color: #fff; border-bottom: 1px solid #444; padding-bottom:5px; margin-bottom:10px;}
+        .sub { color: #aaa; font-size: 0.9em; margin-bottom: 5px;}
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div class="hud">PHASE IX: INFINITE ZOOM</div>
+    <div class="sub"><b>Scroll Wheel</b> to Zoom & Add Space</div>
+    <div class="sub">Current Scale: <span id="scale-stat" style="color:#fff">8.0</span></div>
+    <div class="sub">Grid Size: <span id="grid-stat" style="color:#fff">0x0</span></div>
+    <div style="margin-top:15px; color:#fff;">Matter: <span id="matter-stat">0</span></div>
+</div>
+
+<canvas id="sim"></canvas>
+
+<script>
+/**
+ * EMPIRE EARTH: INFINITE EXPANSION
+ * Dynamic Resizing with Data Preservation.
+ */
+
+const canvas = document.getElementById('sim');
+const ctx = canvas.getContext('2d');
+
+// CONSTANTS
+const SPEED = 0.2;       
+const DECAY = 0.02;      
+const MORTALITY = 0.85;  
+
+// STATE
+let SCALE = 8; // Variable Scale
+let width, height; // Grid dimensions
+let grid, nextGrid;
+let ageGrid, nextAgeGrid;
+let terrainGrid;
+
+// Global World Offset (To keep terrain consistent when expanding)
+let worldOffsetX = 0;
+let worldOffsetY = 0;
+
+function init() {
+    // Initial Setup
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    width = Math.ceil(canvas.width / SCALE);
+    height = Math.ceil(canvas.height / SCALE);
+    
+    // Create blank arrays
+    grid = new Float32Array(width * height);
+    nextGrid = new Float32Array(width * height);
+    ageGrid = new Float32Array(width * height);
+    nextAgeGrid = new Float32Array(width * height);
+    terrainGrid = new Float32Array(width * height);
+    
+    // Generate initial terrain
+    generateTerrain(0, 0, width, height);
+
+    // Initial Seed (Valleys only)
+    for (let i = 0; i < width * height; i++) {
+        if (terrainGrid[i] < 0.4 && Math.random() > 0.8) {
+            grid[i] = Math.random();
+            ageGrid[i] = 0;
+        }
+    }
+    updateStats();
+}
+
+// THE TERRAIN ENGINE (Now accepts coordinates)
+function generateTerrain(startX, startY, w, h) {
+    let zoom = 0.04; 
+    // Random seed based on time would break consistency, so we use fixed math
+    let seed = 123.456; 
+
+    for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+            // Calculate Absolute World Position
+            let wx = startX + x + worldOffsetX;
+            let wy = startY + y + worldOffsetY;
+
+            // Compute Index in the LOCAL grid
+            let i = idx(x, y, w, h); 
+            
+            // Noise Function
+            let n1 = (Math.sin((wx * zoom) + seed) + Math.cos((wy * zoom) + seed));
+            let n2 = (Math.sin((wx * zoom * 3) + seed) + Math.cos((wy * zoom * 3) + seed)) * 0.5;
+            let val = (n1 + n2 + 3) / 6; 
+            
+            if(val < 0) val = 0; if(val > 1) val = 1;
+            terrainGrid[i] = val;
+        }
+    }
+}
+
+// THE ZOOM FUNCTION
+function applyZoom(delta) {
+    // 1. Calculate New Scale
+    let oldScale = SCALE;
+    let newScale = oldScale + delta;
+    if (newScale < 2) newScale = 2;   // Max Zoom Out
+    if (newScale > 40) newScale = 40; // Max Zoom In
+    if (newScale === oldScale) return;
+
+    // 2. Calculate New Grid Dimensions
+    let oldWidth = width;
+    let oldHeight = height;
+    
+    let newWidth = Math.ceil(window.innerWidth / newScale);
+    let newHeight = Math.ceil(window.innerHeight / newScale);
+
+    // 3. Create New Buffers
+    let newGrid = new Float32Array(newWidth * newHeight);
+    let newAge = new Float32Array(newWidth * newHeight);
+    let newTerrain = new Float32Array(newWidth * newHeight); // Temp holder
+
+    // 4. Calculate Offset (Center the old view in the new view)
+    // How many pixels did we gain/lose?
+    let diffX = (newWidth - oldWidth) / 2;
+    let diffY = (newHeight - oldHeight) / 2;
+    
+    // Update World Offset so terrain matches
+    worldOffsetX -= Math.floor(diffX);
+    worldOffsetY -= Math.floor(diffY);
+
+    // 5. COPY DATA (Preservation)
+    for (let y = 0; y < oldHeight; y++) {
+        for (let x = 0; x < oldWidth; x++) {
+            // Where does this pixel go in the new grid?
+            let nx = Math.floor(x + diffX);
+            let ny = Math.floor(y + diffY);
+
+            if (nx >= 0 && nx < newWidth && ny >= 0 && ny < newHeight) {
+                let oldIdx = y * oldWidth + x;
+                let newIdx = ny * newWidth + nx;
+                
+                newGrid[newIdx] = grid[oldIdx];
+                newAge[newIdx] = ageGrid[oldIdx];
+            }
+        }
+    }
+
+    // 6. UPDATE STATE
+    SCALE = newScale;
+    width = newWidth;
+    height = newHeight;
+    grid = newGrid;
+    ageGrid = newAge;
+    terrainGrid = newTerrain; // Will be filled by generateTerrain
+    
+    // Re-init scratch buffers
+    nextGrid = new Float32Array(width * height);
+    nextAgeGrid = new Float32Array(width * height);
+    
+    // 7. REGENERATE TERRAIN (Whole map, consistent with world coords)
+    generateTerrain(0, 0, width, height);
+    
+    updateStats();
+}
+
+function idx(x, y, w, h) {
+    // Clamp edges for simulation safety
+    if (x < 0) x = w - 1; if (x >= w) x = 0;
+    if (y < 0) y = h - 1; if (y >= h) y = 0;
+    return y * w + x;
+}
+
+function update() {
+    let totalMatter = 0;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = y * width + x;
+            
+            let h = terrainGrid[i];
+            let rawPurpose = 0.35 + (h * 0.65); // Height Map Logic
+            
+            let experience = ageGrid[i];
+            let shield = Math.min(experience, 0.20); 
+            let localPurpose = Math.max(rawPurpose - shield, 0.35);
+
+            const IDEAL = 2.6; 
+            const TOLERANCE = 1.6 * (1.0 - localPurpose); 
+            const minN = IDEAL - TOLERANCE;
+            const maxN = IDEAL + TOLERANCE;
+
+            let neighbors = 0;
+            // Quick neighbor check
+            neighbors += grid[idx(x-1, y-1, width, height)]; 
+            neighbors += grid[idx(x  , y-1, width, height)]; 
+            neighbors += grid[idx(x+1, y-1, width, height)];
+            neighbors += grid[idx(x-1, y  , width, height)];                                   
+            neighbors += grid[idx(x+1, y  , width, height)];
+            neighbors += grid[idx(x-1, y+1, width, height)]; 
+            neighbors += grid[idx(x  , y+1, width, height)]; 
+            neighbors += grid[idx(x+1, y+1, width, height)];
+
+            let state = grid[i];
+            let age = ageGrid[i];
+            let target = 0;
+
+            if (neighbors > minN && neighbors < maxN) {
+                target = 1.0; 
+                nextAgeGrid[i] = age + 0.005; 
+            } else {
+                target = 0.0;
+                nextAgeGrid[i] = age * 0.95; 
+            }
+
+            if (age > MORTALITY) {
+                target = 0.0;
+                nextAgeGrid[i] = 0;
+            }
+
+            let delta = (target - state) * SPEED;
+            if (target === 0) delta -= DECAY;
+            let newState = state + delta;
+            if (newState < 0) newState = 0;
+            if (newState > 1) newState = 1;
+
+            nextGrid[i] = newState;
+            totalMatter += newState;
+        }
+    }
+
+    let temp = grid; grid = nextGrid; nextGrid = temp;
+    let tempAge = ageGrid; ageGrid = nextAgeGrid; nextAgeGrid = tempAge;
+    
+    document.getElementById('matter-stat').innerText = Math.floor(totalMatter);
+}
+
+function draw() {
+    // Clear
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0,0, canvas.width, canvas.height);
+
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const data = imgData.data;
+
+    for (let i = 0; i < width * height; i++) {
+        let val = grid[i];
+        let p = i * 4;
+        
+        if (val < 0.1) {
+            // TERRAIN
+            let h = terrainGrid[i];
+            let c = Math.floor(h * 60); 
+            data[p] = c + 20; data[p+1] = c + 10; data[p+2] = c + 10; data[p+3] = 255;
+        } else {
+            // LIFE
+            let age = ageGrid[i];
+            if (age < 0.2) {
+                data[p] = 255; data[p+1] = val*140; data[p+2] = 0;
+            } else if (age < 0.6) {
+                data[p] = 0; data[p+1] = 200; data[p+2] = 150 + (val*100);
+            } else {
+                data[p] = 255; data[p+1] = 255; data[p+2] = 255;
+            }
+            data[p+3] = 255;
+        }
+    }
+    
+    // Scale up the image to fit screen
+    // We create a temporary canvas to draw the small buffer, then scale it up
+    // Actually, putImageData ignores scaling.
+    // For Infinite Zoom feel, we want sharp pixels.
+    // Efficient approach: Draw to an offscreen canvas, then drawImage with scaling.
+    createImageBitmap(imgData).then(bitmap => {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    });
+}
+
+function updateStats() {
+    document.getElementById('scale-stat').innerText = SCALE.toFixed(1);
+    document.getElementById('grid-stat').innerText = width + "x" + height;
+}
+
+// EVENTS
+window.addEventListener('wheel', e => {
+    // Scroll Down (Positive) = Zoom Out (Smaller Scale)
+    // Scroll Up (Negative) = Zoom In (Larger Scale)
+    let direction = e.deltaY > 0 ? -1 : 1;
+    applyZoom(direction);
+});
+
+let mouseDown = false;
+canvas.addEventListener('mousedown', () => mouseDown = true);
+canvas.addEventListener('mouseup', () => mouseDown = false);
+canvas.addEventListener('mousemove', e => {
+    if (!mouseDown) return;
+    let rect = canvas.getBoundingClientRect();
+    // Map mouse to grid coords
+    let x = Math.floor((e.clientX / canvas.width) * width);
+    let y = Math.floor((e.clientY / canvas.height) * height);
+    
+    for(let dy=-2; dy<=2; dy++){
+        for(let dx=-2; dx<=2; dx++){
+             let i = idx(x+dx, y+dy, width, height);
+             grid[i] = 1.0; 
+             ageGrid[i] = 0.3; 
+        }
+    }
+});
+
+init();
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
