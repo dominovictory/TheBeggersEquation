@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Empire Earth: Petri Dish Mode</title>
+    <style>
+        body { margin: 0; background: #111; overflow: hidden; color: #ffaa00; font-family: monospace; }
+        canvas { display: block; margin: 0 auto; background: #000; cursor: crosshair; }
+        #ui { 
+            position: absolute; top: 10px; left: 10px; 
+            background: rgba(0,0,0,0.0); padding: 20px; 
+            pointer-events: none;
+        }
+        .hud { font-size: 1.2em; font-weight: bold; color: #fff; text-shadow: 0 0 5px #000; }
+        .sub { color: #aaa; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div class="hud">THE PETRI DISH</div>
+    <div class="sub">Radial Purpose Gradient</div>
+    <div class="sub" style="margin-top:5px">Center: Chaos (Source)</div>
+    <div class="sub">Edge: The Void (Limit)</div>
+    <div style="margin-top:15px; color:#fff;">Matter: <span id="matter-stat">0</span></div>
+</div>
+
+<canvas id="sim"></canvas>
+
+<script>
+/**
+ * EMPIRE EARTH: RADIAL TOPOLOGY
+ * Life expands from the center against a circular boundary.
+ */
+
+const canvas = document.getElementById('sim');
+const ctx = canvas.getContext('2d');
+
+const SCALE = 6;         // Slightly higher res for the circle
+const SPEED = 0.2;       
+const DECAY = 0.02;      
+const MORTALITY = 0.90;  // Slightly longer life for radial expansion
+
+let width, height;
+let centerX, centerY, radius;
+let grid, nextGrid;
+let ageGrid, nextAgeGrid;
+
+function resize() {
+    // Make canvas fit window but keep it square-ish or full
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    
+    // Simulation grid size
+    width = Math.ceil(canvas.width / SCALE);
+    height = Math.ceil(canvas.height / SCALE);
+    
+    centerX = Math.floor(width / 2);
+    centerY = Math.floor(height / 2);
+    // Radius is slightly smaller than the screen
+    radius = Math.min(centerX, centerY) - 10; 
+
+    initGrid();
+}
+
+function initGrid() {
+    grid = new Float32Array(width * height);
+    nextGrid = new Float32Array(width * height);
+    ageGrid = new Float32Array(width * height);
+    nextAgeGrid = new Float32Array(width * height);
+
+    // Seed ONLY the center
+    for (let i = 0; i < width * height; i++) {
+        let x = i % width;
+        let y = Math.floor(i / width);
+        let dist = Math.hypot(x - centerX, y - centerY);
+        
+        // Start with a dense "Protoplasm" in the middle
+        if (dist < 20) {
+            grid[i] = Math.random();
+            ageGrid[i] = 0;
+        }
+    }
+}
+
+function idx(x, y) {
+    // Standard Wrap (Toroidal) - though gravity will kill edges anyway
+    return ((y + height) % height) * width + ((x + width) % width);
+}
+
+function update() {
+    let totalMatter = 0;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = y * width + x;
+            
+            // 1. RADIAL PHYSICS
+            let dx = x - centerX;
+            let dy = y - centerY;
+            let dist = Math.hypot(dx, dy);
+            
+            // Normalized distance (0.0 at center, 1.0 at edge)
+            let rNorm = dist / radius;
+
+            // If outside the circle, INSTANT DEATH
+            if (dist > radius) {
+                nextGrid[i] = 0;
+                nextAgeGrid[i] = 0;
+                continue;
+            }
+
+            // 2. PURPOSE GRADIENT (The Gravity Well)
+            // Center = Low Purpose (Easy to live)
+            // Edge = High Purpose (Hard to live)
+            let rawPurpose = 0.35 + (rNorm * 0.7); // Ramps up fast
+
+            // 3. LEGACY SHIELD
+            let experience = ageGrid[i];
+            let shield = Math.min(experience, 0.25); // Stronger shield allowed
+            let localPurpose = Math.max(rawPurpose - shield, 0.35);
+
+            // 4. BEGGER'S LOGIC
+            const IDEAL = 2.6; 
+            const TOLERANCE = 1.7 * (1.0 - localPurpose); 
+            const minN = IDEAL - TOLERANCE;
+            const maxN = IDEAL + TOLERANCE;
+
+            // Neighbors
+            let neighbors = 0;
+            neighbors += grid[idx(x-1, y-1)]; neighbors += grid[idx(x  , y-1)]; neighbors += grid[idx(x+1, y-1)];
+            neighbors += grid[idx(x-1, y  )];                                   neighbors += grid[idx(x+1, y  )];
+            neighbors += grid[idx(x-1, y+1)]; neighbors += grid[idx(x  , y+1)]; neighbors += grid[idx(x+1, y+1)];
+
+            let state = grid[i];
+            let age = ageGrid[i];
+            let target = 0;
+
+            if (neighbors > minN && neighbors < maxN) {
+                target = 1.0; 
+                nextAgeGrid[i] = age + 0.005; 
+            } else {
+                target = 0.0;
+                nextAgeGrid[i] = age * 0.95; // Memory fades slower
+            }
+
+            // Mortality
+            if (age > MORTALITY) {
+                target = 0.0;
+                nextAgeGrid[i] = 0;
+            }
+
+            // Update
+            let delta = (target - state) * SPEED;
+            if (target === 0) delta -= DECAY;
+            let newState = state + delta;
+            if (newState < 0) newState = 0;
+            if (newState > 1) newState = 1;
+
+            nextGrid[i] = newState;
+            totalMatter += newState;
+        }
+    }
+
+    let temp = grid; grid = nextGrid; nextGrid = temp;
+    let tempAge = ageGrid; ageGrid = nextAgeGrid; nextAgeGrid = tempAge;
+    
+    document.getElementById('matter-stat').innerText = Math.floor(totalMatter);
+}
+
+function draw() {
+    // Clear with black
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Draw the "Dish" boundary
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(centerX * SCALE, centerY * SCALE, radius * SCALE, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const imgData = ctx.getImageData(0, 0, width, height); // Note: this gets the small buffer
+    // We need to construct the image manually to handle transparency properly if we wanted,
+    // but puttingImageData scales 1:1. We need to draw rects or scale up.
+    // For performance at SCALE 6, we can use fillRect.
+    
+    // Optimized Rendering for "Petri Dish" feel
+    for (let i = 0; i < width * height; i++) {
+        let val = grid[i];
+        if (val < 0.1) continue; // Skip void
+        
+        let age = ageGrid[i];
+        let x = (i % width) * SCALE;
+        let y = Math.floor(i / width) * SCALE;
+
+        // Color Logic
+        if (age < 0.2) {
+            ctx.fillStyle = `rgba(255, ${Math.floor(val*100)}, 0, ${val})`; // Magma
+        } else if (age < 0.6) {
+             ctx.fillStyle = `rgba(0, 200, ${Math.floor(100 + val*155)}, ${val})`; // Teal
+        } else {
+             ctx.fillStyle = `rgba(255, 255, 255, ${val})`; // White Elders
+        }
+        
+        ctx.fillRect(x, y, SCALE, SCALE);
+    }
+}
+
+// God Mode: Inject from Center
+let mouseDown = false;
+canvas.addEventListener('mousedown', () => mouseDown = true);
+canvas.addEventListener('mouseup', () => mouseDown = false);
+canvas.addEventListener('mousemove', e => {
+    if (!mouseDown) return;
+    let rect = canvas.getBoundingClientRect();
+    let x = Math.floor((e.clientX - rect.left) / SCALE);
+    let y = Math.floor((e.clientY - rect.top) / SCALE);
+    
+    for(let dy=-4; dy<=4; dy++){
+        for(let dx=-4; dx<=4; dx++){
+            // Distance check to keep drawing circular
+            if (Math.hypot(dx, dy) < 4) {
+                 let idxVal = idx(x+dx, y+dy);
+                 grid[idxVal] = 1.0; 
+                 ageGrid[idxVal] = 0.5; 
+            }
+        }
+    }
+});
+
+window.addEventListener('resize', resize);
+resize();
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
