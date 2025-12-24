@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Empire Earth: The Begger's Equation</title>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; color: #ffaa00; font-family: monospace; }
+        canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+        #ui { 
+            position: absolute; top: 10px; left: 10px; 
+            background: rgba(0,0,0,0.85); padding: 20px; 
+            border: 1px solid #ffaa00; border-radius: 8px;
+            pointer-events: none;
+        }
+        .hud { font-size: 1.2em; font-weight: bold; color: #fff; border-bottom: 1px solid #444; padding-bottom:5px; margin-bottom:10px;}
+        .key { display: flex; align-items: center; margin-bottom: 4px; font-size: 0.9em; }
+        .dot { width: 10px; height: 10px; display: inline-block; margin-right: 8px; border-radius: 50%; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <div class="hud">EMPIRE EARTH</div>
+    <div class="key"><span class="dot" style="background:#f50"></span> Chaos (New Life)</div>
+    <div class="key"><span class="dot" style="background:#0fa"></span> Structure (City)</div>
+    <div class="key"><span class="dot" style="background:#fff"></span> Elders (Colonizers)</div>
+    <div style="margin-top:15px; color:#888;">Matter Count: <span id="matter-stat" style="color:#fff">0</span></div>
+</div>
+
+<canvas id="sim"></canvas>
+
+<script>
+/**
+ * EMPIRE EARTH: FINAL PHASE
+ * The complete implementation of the Begger's Equation.
+ * Features: Spatial Purpose, Legacy Shielding, Mortality Cycle.
+ */
+
+const canvas = document.getElementById('sim');
+const ctx = canvas.getContext('2d');
+
+// -- PHYSICS CONSTANTS --
+const SCALE = 8;         // Resolution (Lower = Higher Res)
+const SPEED = 0.2;       // Fluid Viscosity
+const DECAY = 0.02;      // Entropy Rate
+const MORTALITY = 0.85;  // Age limit before death (0.0 to 1.0)
+
+let width, height;
+let grid, nextGrid;
+let ageGrid, nextAgeGrid;
+
+function resize() {
+    width = Math.ceil(window.innerWidth / SCALE);
+    height = Math.ceil(window.innerHeight / SCALE);
+    canvas.width = width;
+    canvas.height = height;
+    initGrid();
+}
+
+function initGrid() {
+    grid = new Float32Array(width * height);
+    nextGrid = new Float32Array(width * height);
+    ageGrid = new Float32Array(width * height);
+    nextAgeGrid = new Float32Array(width * height);
+
+    // The Big Bang (Seed)
+    for (let i = 0; i < width * height; i++) {
+        if (Math.random() > 0.7) {
+            grid[i] = Math.random();
+            ageGrid[i] = 0;
+        }
+    }
+}
+
+function idx(x, y) {
+    // Toroidal Space-Time (Wrap edges)
+    return ((y + height) % height) * width + ((x + width) % width);
+}
+
+function update() {
+    let totalMatter = 0;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = y * width + x;
+            
+            // 1. THE ENVIRONMENT (Purpose Gradient)
+            // Left = Low Pressure (Chaos), Right = High Pressure (Void)
+            let rawPurpose = 0.4 + (x / width) * 0.6;
+
+            // 2. THE LEGACY SHIELD
+            // Experience reduces the effective pressure of the void.
+            let experience = ageGrid[i];
+            let shield = Math.min(experience, 0.20); 
+            let localPurpose = Math.max(rawPurpose - shield, 0.4);
+
+            // 3. THE BEGGER'S LOGIC (G/P Ratio)
+            const IDEAL = 2.6; // Geometric Sweet Spot
+            const TOLERANCE = 1.6 * (1.0 - localPurpose); 
+            const minN = IDEAL - TOLERANCE;
+            const maxN = IDEAL + TOLERANCE;
+
+            // Count Neighbors
+            let neighbors = 0;
+            neighbors += grid[idx(x-1, y-1)]; neighbors += grid[idx(x  , y-1)]; neighbors += grid[idx(x+1, y-1)];
+            neighbors += grid[idx(x-1, y  )];                                   neighbors += grid[idx(x+1, y  )];
+            neighbors += grid[idx(x-1, y+1)]; neighbors += grid[idx(x  , y+1)]; neighbors += grid[idx(x+1, y+1)];
+
+            // Life/Death Decision
+            let state = grid[i];
+            let age = ageGrid[i];
+            let target = 0;
+
+            if (neighbors > minN && neighbors < maxN) {
+                target = 1.0; 
+                nextAgeGrid[i] = age + 0.005; // Gain Wisdom
+            } else {
+                target = 0.0;
+                nextAgeGrid[i] = age * 0.9;   // Forget
+            }
+
+            // 4. THE LAW OF RENEWAL (Mortality)
+            // If too old, return to the void to allow new growth.
+            if (age > MORTALITY) {
+                target = 0.0;
+                nextAgeGrid[i] = 0;
+            }
+
+            // Fluid State Transition
+            let delta = (target - state) * SPEED;
+            if (target === 0) delta -= DECAY;
+
+            let newState = state + delta;
+            if (newState < 0) newState = 0;
+            if (newState > 1) newState = 1;
+
+            nextGrid[i] = newState;
+            totalMatter += newState;
+        }
+    }
+
+    // Advance Time
+    let temp = grid; grid = nextGrid; nextGrid = temp;
+    let tempAge = ageGrid; ageGrid = nextAgeGrid; nextAgeGrid = tempAge;
+    
+    document.getElementById('matter-stat').innerText = Math.floor(totalMatter);
+}
+
+function draw() {
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const data = imgData.data;
+
+    for (let i = 0; i < width * height; i++) {
+        let val = grid[i];
+        let age = ageGrid[i];
+        let p = i * 4;
+        
+        if (val < 0.1) {
+            data[p]=0; data[p+1]=0; data[p+2]=0; // Void
+        } else {
+            // TAXONOMY LENS
+            if (age < 0.2) {
+                // CHAOS (Orange/Red)
+                data[p] = 255; data[p+1] = val*120; data[p+2] = 0;
+            } else if (age < 0.6) {
+                // STRUCTURE (Teal/Green)
+                data[p] = 0; data[p+1] = 200; data[p+2] = 150 + (val*100);
+            } else {
+                // LEGACY (White)
+                data[p] = 255; data[p+1] = 255; data[p+2] = 255;
+            }
+        }
+        data[p+3] = 255;
+    }
+    ctx.putImageData(imgData, 0, 0);
+}
+
+// Interaction: God Mode (Inject Chaos)
+let mouseDown = false;
+canvas.addEventListener('mousedown', () => mouseDown = true);
+canvas.addEventListener('mouseup', () => mouseDown = false);
+canvas.addEventListener('mousemove', e => {
+    if (!mouseDown) return;
+    let rect = canvas.getBoundingClientRect();
+    let x = Math.floor((e.clientX - rect.left) / SCALE);
+    let y = Math.floor((e.clientY - rect.top) / SCALE);
+    // Brush Size
+    for(let dy=-3; dy<=3; dy++){
+        for(let dx=-3; dx<=3; dx++){
+            let i = idx(x+dx, y+dy);
+            grid[i] = 1.0; 
+            ageGrid[i] = 0.5; // Inject Experienced Matter
+        }
+    }
+});
+
+// Start
+window.addEventListener('resize', resize);
+resize();
+function loop() {
+    update();
+    draw();
+    requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
