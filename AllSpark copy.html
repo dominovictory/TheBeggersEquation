@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.js"></script>
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: monospace; }
+        #ui { 
+            position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.9); 
+            color: #ffaa00; padding: 15px; border: 1px solid #ffaa00; border-radius: 8px;
+            pointer-events: auto; width: 260px; z-index: 100;
+        }
+        input[type=range] { width: 100%; accent-color: #ffaa00; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <b>UNIFIED METABOLIC ENGINE (v5.0)</b><br>
+        ACTORS: <span id="pop">0</span> | MATTER: <span id="wm">0</span>
+        <hr>
+        <div style="font-size:0.8em">PURPOSE (G/P RATIO)</div>
+        <input type="range" id="pressureSlider" min="0.0" max="1.0" step="0.01" value="0.55">
+        <div id="pressureVal" style="text-align:center">0.55</div>
+        <div style="font-size:0.7em; color:#888; margin-top:5px; text-align:center;">The agents are the math.</div>
+    </div>
+
+<script>
+let grid, nextGrid;
+const SCALE = 8; 
+let cols, rows;
+let PURPOSE = 0.55;
+let hosts = [];
+const maxPop = 4000;
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    cols = Math.ceil(width / SCALE);
+    rows = Math.ceil(height / SCALE);
+    grid = new Float32Array(cols * rows);
+    nextGrid = new Float32Array(cols * rows);
+    
+    // Seed the field
+    for (let i = 0; i < grid.length; i++) grid[i] = random() > 0.8 ? 1 : 0;
+
+    for (let i = 0; i < 1200; i++) {
+        hosts.push(new Host(random(width), random(height), random(1) > 0.5 ? 0 : 1));
+    }
+}
+
+function draw() {
+    updateField();
+    
+    background(0);
+    loadPixels();
+    let totalMatter = 0;
+
+    // Draw Substrate
+    for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+            let val = grid[y * cols + x];
+            totalMatter += val;
+            if (val > 0.1) {
+                let r, g, b;
+                if (val < 0.4) { r = val * 200; g = 0; b = 0; }
+                else if (val < 0.7) { r = 255; g = val * 180; b = 0; }
+                else { r = 255; g = 255; b = 200; }
+                
+                fill(r, g, b);
+                rect(x * SCALE, y * SCALE, SCALE, SCALE);
+            }
+        }
+    }
+
+    // Agents
+    for (let i = hosts.length - 1; i >= 0; i--) {
+        let h = hosts[i];
+        h.update();
+        h.display();
+        if (h.energy <= 0) hosts.splice(i, 1);
+    }
+
+    document.getElementById('pop').innerText = hosts.length;
+    document.getElementById('wm').innerText = floor(totalMatter);
+}
+
+function updateField() {
+    const IDEAL = 2.6;
+    const TOLERANCE = 1.5 * (1.0 - PURPOSE);
+    const minN = IDEAL - TOLERANCE;
+    const maxN = IDEAL + TOLERANCE;
+
+    for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+            let i = y * cols + x;
+            let n = countNeighbors(x, y);
+            let target = (n > minN && n < maxN) ? 1.0 : 0.0;
+            let next = lerp(grid[i], target, 0.1) - 0.005;
+            nextGrid[i] = constrain(next, 0, 1.5);
+        }
+    }
+    grid.set(nextGrid);
+}
+
+function countNeighbors(x, y) {
+    let sum = 0;
+    for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+            if (i === 0 && j === 0) continue;
+            sum += grid[((y + j + rows) % rows) * cols + ((x + i + cols) % cols)];
+        }
+    }
+    return sum;
+}
+
+class Host {
+    constructor(x, y, state) {
+        this.pos = createVector(x, y);
+        this.vel = p5.Vector.random2D();
+        this.state = state; 
+        this.energy = 100;
+    }
+
+    update() {
+        let gx = floor(this.pos.x / SCALE);
+        let gy = floor(this.pos.y / SCALE);
+        let idx = gy * cols + gx;
+        let fieldValue = grid[idx] || 0;
+
+        // METABOLIC CONSUMPTION: Move only if there is matter, and eat it
+        if (fieldValue > 0.2) {
+            grid[idx] -= 0.05; // Eat the floor to move
+            this.energy = min(this.energy + 0.5, 100);
+            this.vel.rotate(random(-0.1, 0.1));
+        } else {
+            // VOID COLLISION: Bounce or turn if hitting black space
+            this.vel.rotate(PI / 2);
+            this.energy -= 0.2; // Starve in the void
+        }
+
+        let speed = map(fieldValue, 0, 1, 0.5, 3);
+        this.pos.add(p5.Vector.mult(this.vel, speed));
+        this.edges();
+
+        // Reproduce if healthy in strict zones
+        if (this.energy > 90 && fieldValue > 0.8 && hosts.length < maxPop && random(1) < 0.005) {
+            hosts.push(new Host(this.pos.x, this.pos.y, this.state));
+        }
+    }
+
+    display() {
+        strokeWeight(6);
+        stroke(this.state === 1 ? '#ffaa00' : '#00ccff');
+        point(this.pos.x, this.pos.y);
+    }
+
+    edges() {
+        if (this.pos.x > width) this.pos.x = 0; if (this.pos.x < 0) this.pos.x = width;
+        if (this.pos.y > height) this.pos.y = 0; if (this.pos.y < 0) this.pos.y = height;
+    }
+}
+
+document.getElementById('pressureSlider').addEventListener('input', (e) => {
+    PURPOSE = parseFloat(e.target.value);
+    document.getElementById('pressureVal').innerText = PURPOSE.toFixed(2);
+});
+</script>
+</body>
+</html>
